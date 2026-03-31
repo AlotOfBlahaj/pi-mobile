@@ -3,6 +3,7 @@ import { join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
 import { FaceIdService } from "./faceid.ts";
+import { resolveOrigin } from "./proxy.ts";
 import type {
 	ApiCommandRequest,
 	ApiActiveSessionsResponse,
@@ -309,6 +310,7 @@ Bun.serve({
 	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
 	async fetch(req): Promise<Response> {
 		const url = new URL(req.url);
+		const origin = resolveOrigin(req.headers.get("x-forwarded-proto"), url);
 
 		if (url.pathname === "/health") {
 			return json({ ok: true }, 200);
@@ -393,7 +395,7 @@ Bun.serve({
                                 return errorResponse("Invalid faceid challenge kind", 400);
                         }
                         try {
-                                const result = await faceId.createChallenge(kind, url.hostname, url.origin);
+                                const result = await faceId.createChallenge(kind, url.hostname, origin);
                                 return json(result, 200);
                         } catch (error) {
                                 const message = error instanceof Error ? error.message : String(error);
