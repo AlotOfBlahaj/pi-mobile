@@ -35,11 +35,19 @@ export function installFaceIdGuard({ api }) {
         const ui = createOverlay();
         let locked = true;
         let inFlight = false;
+        /** true while a WebAuthn prompt is showing — blur caused by the native
+         *  biometric sheet must NOT re-lock the session. */
+        let prompting = false;
+        /** Timestamp of the last successful unlock.  Used to debounce rapid
+         *  visibility/focus event bursts that follow a Face ID prompt dismiss. */
+        let lastUnlockedAt = 0;
+        const RELOCK_DEBOUNCE_MS = 2000;
 
         function setLocked(value) {
                 locked = value;
                 document.body.classList.toggle("faceid-locked", value);
                 ui.overlay.classList.toggle("open", value);
+                if (!value) lastUnlockedAt = Date.now();
         }
 
         function setStatus(text, { showRetry = false } = {}) {
@@ -58,15 +66,25 @@ export function installFaceIdGuard({ api }) {
         async function runRegistration() {
                 const challenge = await createChallenge("register");
                 const { startRegistration } = await loadSimpleWebAuthn();
-                const credential = await startRegistration({ optionsJSON: challenge.options });
-                await verifyChallenge(challenge.challengeId, credential);
+                prompting = true;
+                try {
+                        const credential = await startRegistration({ optionsJSON: challenge.options });
+                        await verifyChallenge(challenge.challengeId, credential);
+                } finally {
+                        prompting = false;
+                }
         }
 
         async function runAuthentication() {
                 const challenge = await createChallenge("authenticate");
                 const { startAuthentication } = await loadSimpleWebAuthn();
-                const assertion = await startAuthentication({ optionsJSON: challenge.options });
-                await verifyChallenge(challenge.challengeId, assertion);
+                prompting = true;
+                try {
+                        const assertion = await startAuthentication({ optionsJSON: challenge.options });
+                        await verifyChallenge(challenge.challengeId, assertion);
+                } finally {
+                        prompting = false;
+                }
         }
 
         async function ensureUnlocked() {
@@ -102,31 +120,47 @@ export function installFaceIdGuard({ api }) {
                 void ensureUnlocked();
         }
 
+        /** True when we should treat a blur/visibility-hidden event as a
+         *  genuine "user left the page" rather than a side-effect of the
+         *  native WebAuthn / biometric prompt stealing focus. */
+        function isRealDeparture() {
+                if (prompting || inFlight) return false;
+                if (Date.now() - lastUnlockedAt < RELOCK_DEBOUNCE_MS) return false;
+                return true;
+        }
+
         function bindVisibilityHooks() {
                 window.addEventListener("blur", () => {
+                        if (!isRealDeparture()) return;
                         setLocked(true);
                         setStatus("Session hidden. Face ID is required to continue.");
                 });
 
                 document.addEventListener("visibilitychange", () => {
                         if (document.visibilityState === "hidden") {
+                                if (!isRealDeparture()) return;
                                 setLocked(true);
                                 setStatus("Session hidden. Face ID is required to continue.");
                                 return;
                         }
-                        lockAndRequirePresence();
+                        // Page became visible — only re-verify if currently locked
+                        if (locked && !inFlight) {
+                                void ensureUnlocked();
+                        }
                 });
 
                 window.addEventListener("focus", () => {
-                        if (!locked) {
-                                lockAndRequirePresence();
-                                return;
+                        if (prompting || inFlight) return;
+                        // Only re-prompt if the session is actually locked
+                        if (locked && !inFlight) {
+                                void ensureUnlocked();
                         }
-                        void ensureUnlocked();
                 });
 
                 window.addEventListener("pageshow", () => {
-                        lockAndRequirePresence();
+                        if (locked && !inFlight) {
+                                void ensureUnlocked();
+                        }
                 });
 
                 if (ui.button) {
