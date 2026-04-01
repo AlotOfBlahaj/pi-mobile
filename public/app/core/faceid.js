@@ -35,19 +35,15 @@ export function installFaceIdGuard({ api }) {
         const ui = createOverlay();
         let locked = true;
         let inFlight = false;
-        /** true while a WebAuthn prompt is showing — blur caused by the native
-         *  biometric sheet must NOT re-lock the session. */
         let prompting = false;
-        /** Timestamp of the last successful unlock.  Used to debounce rapid
-         *  visibility/focus event bursts that follow a Face ID prompt dismiss. */
-        let lastUnlockedAt = 0;
-        const RELOCK_DEBOUNCE_MS = 2000;
+        /** Once verified, stays true for the entire page lifecycle.
+         *  No blur / visibility / focus event will ever re-lock. */
+        let verified = false;
 
         function setLocked(value) {
                 locked = value;
                 document.body.classList.toggle("faceid-locked", value);
                 ui.overlay.classList.toggle("open", value);
-                if (!value) lastUnlockedAt = Date.now();
         }
 
         function setStatus(text, { showRetry = false } = {}) {
@@ -88,7 +84,7 @@ export function installFaceIdGuard({ api }) {
         }
 
         async function ensureUnlocked() {
-                if (!locked || inFlight) return;
+                if (verified || !locked || inFlight) return;
                 inFlight = true;
                 setStatus("Prompting Face ID…");
                 try {
@@ -105,6 +101,7 @@ export function installFaceIdGuard({ api }) {
                         }
                         setStatus("Confirm with Face ID to unlock.");
                         await runAuthentication();
+                        verified = true;
                         setLocked(false);
                 } catch (error) {
                         setLocked(true);
@@ -114,58 +111,32 @@ export function installFaceIdGuard({ api }) {
                 }
         }
 
-        function lockAndRequirePresence() {
-                setLocked(true);
-                setStatus("Prompting Face ID…");
-                void ensureUnlocked();
-        }
-
-        /** True when we should treat a blur/visibility-hidden event as a
-         *  genuine "user left the page" rather than a side-effect of the
-         *  native WebAuthn / biometric prompt stealing focus. */
-        function isRealDeparture() {
-                if (prompting || inFlight) return false;
-                if (Date.now() - lastUnlockedAt < RELOCK_DEBOUNCE_MS) return false;
-                return true;
-        }
-
         function bindVisibilityHooks() {
-                window.addEventListener("blur", () => {
-                        if (!isRealDeparture()) return;
-                        setLocked(true);
-                        setStatus("Session hidden. Face ID is required to continue.");
-                });
+                // After successful verification, no event ever re-locks.
+                // These hooks only serve to retry when the initial prompt failed.
 
                 document.addEventListener("visibilitychange", () => {
-                        if (document.visibilityState === "hidden") {
-                                if (!isRealDeparture()) return;
-                                setLocked(true);
-                                setStatus("Session hidden. Face ID is required to continue.");
-                                return;
-                        }
-                        // Page became visible — only re-verify if currently locked
-                        if (locked && !inFlight) {
-                                void ensureUnlocked();
-                        }
+                        if (verified) return;
+                        if (document.visibilityState === "hidden") return;
+                        if (locked && !inFlight) void ensureUnlocked();
                 });
 
                 window.addEventListener("focus", () => {
-                        if (prompting || inFlight) return;
-                        // Only re-prompt if the session is actually locked
-                        if (locked && !inFlight) {
-                                void ensureUnlocked();
-                        }
+                        if (verified || prompting || inFlight) return;
+                        if (locked) void ensureUnlocked();
                 });
 
                 window.addEventListener("pageshow", () => {
-                        if (locked && !inFlight) {
-                                void ensureUnlocked();
-                        }
+                        if (verified) return;
+                        if (locked && !inFlight) void ensureUnlocked();
                 });
 
                 if (ui.button) {
                         ui.button.addEventListener("click", () => {
-                                lockAndRequirePresence();
+                                if (verified) return;
+                                locked = true;
+                                setStatus("Prompting Face ID…");
+                                void ensureUnlocked();
                         });
                 }
         }
@@ -173,7 +144,7 @@ export function installFaceIdGuard({ api }) {
         return {
                 async start() {
                         bindVisibilityHooks();
-                        lockAndRequirePresence();
+                        void ensureUnlocked();
                 },
         };
 }
