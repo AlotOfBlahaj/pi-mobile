@@ -2,9 +2,8 @@
  * Reverse-proxy origin resolution.
  *
  * When running behind a TLS-terminating proxy (e.g. Cloudflare Tunnel), Bun
- * receives plain HTTP while the browser uses HTTPS.  WebAuthn verification
- * compares origins, so the server must reconstruct the external protocol from
- * the standard `X-Forwarded-Proto` header.
+ * receives plain HTTP while the browser uses HTTPS.  Reconstruct the external
+ * protocol from the standard `X-Forwarded-Proto` header.
  */
 
 /**

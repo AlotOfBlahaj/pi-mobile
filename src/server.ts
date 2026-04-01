@@ -2,8 +2,6 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PiWebRuntime, type SessionClient } from "./session-runtime.ts";
-import { FaceIdService } from "./faceid.ts";
-import { resolveOrigin } from "./proxy.ts";
 import type {
 	ApiCommandRequest,
 	ApiActiveSessionsResponse,
@@ -230,7 +228,6 @@ function createSseStream(signal: AbortSignal) {
 }
 
 const runtime = new PiWebRuntime();
-const faceId = new FaceIdService();
 const { host, port, token, tls } = parseArgs(process.argv);
 const requiresAuth = !isLoopbackHost(host) && !isTailnetHost(host);
 const replayEnabled = process.env.PI_WEB_REPLAY?.trim() === "1";
@@ -241,9 +238,6 @@ if (requiresAuth && !token) {
 
 const publicDir = join(import.meta.dir, "..", "public");
 const publicRoot = resolve(publicDir) + sep;
-const simpleWebAuthnBrowserDir = join(import.meta.dir, "..", "node_modules", "@simplewebauthn", "browser", "esm");
-const simpleWebAuthnBrowserRoot = resolve(simpleWebAuthnBrowserDir) + sep;
-const simpleWebAuthnBrowserUrlPrefix = "/vendor/simplewebauthn/browser/esm/";
 
 function requireJsonBody(req: Request): Promise<Record<string, unknown>> {
 	return req.json().catch(() => ({}));
@@ -281,22 +275,6 @@ function resolvePublicFile(url: URL): string | null {
 	return full;
 }
 
-function resolveSimpleWebAuthnBrowserFile(url: URL): string | null {
-	if (!url.pathname.startsWith(simpleWebAuthnBrowserUrlPrefix)) return null;
-	let relPath = url.pathname.slice(simpleWebAuthnBrowserUrlPrefix.length).replace(/^\/+/, "");
-	if (!relPath) return null;
-
-	try {
-		relPath = decodeURIComponent(relPath);
-	} catch {
-		return null;
-	}
-
-	const full = resolve(simpleWebAuthnBrowserDir, relPath);
-	if (!full.startsWith(simpleWebAuthnBrowserRoot)) return null;
-	return full;
-}
-
 function parseSessionRoute(pathname: string): { sessionId: string; action: string } | null {
 	const parts = pathname.split("/").filter((p) => p.length > 0);
 	if (parts.length !== 4) return null;
@@ -310,7 +288,6 @@ Bun.serve({
 	...(tls ? { tls: { cert: Bun.file(tls.certFile), key: Bun.file(tls.keyFile) } } : {}),
 	async fetch(req): Promise<Response> {
 		const url = new URL(req.url);
-		const origin = resolveOrigin(req.headers.get("x-forwarded-proto"), url);
 
 		if (url.pathname === "/health") {
 			return json({ ok: true }, 200);
@@ -324,12 +301,6 @@ Bun.serve({
 		}
 		if (req.method === "GET" && url.pathname === "/favicon.ico") {
 			return new Response(null, { status: 204 });
-		}
-
-		if (req.method === "GET" && url.pathname.startsWith(simpleWebAuthnBrowserUrlPrefix)) {
-			const filePath = resolveSimpleWebAuthnBrowserFile(url);
-			if (filePath) return serveStatic(filePath);
-			return new Response("Not found", { status: 404 });
 		}
 
 		if (req.method === "GET" && !isApiPath(url.pathname)) {
@@ -364,16 +335,6 @@ Bun.serve({
 			return json(body, 200);
 		}
 
-                if (req.method === "GET" && url.pathname === "/api/faceid/status") {
-                        try {
-                                const body = await faceId.status(url.hostname);
-                                return json(body, 200);
-                        } catch (error) {
-                                const message = error instanceof Error ? error.message : String(error);
-                                return errorResponse(message, 400);
-                        }
-                }
-
 		if (req.method === "POST" && url.pathname === "/api/repos") {
 			const raw = (await requireJsonBody(req)) as ApiAddRepoRequest;
 			if (!raw?.cwd || typeof raw.cwd !== "string") {
@@ -387,35 +348,6 @@ Bun.serve({
 				return errorResponse(message, 400);
 			}
 		}
-
-                if (req.method === "POST" && url.pathname === "/api/faceid/challenge") {
-                        const raw = (await requireJsonBody(req)) as { kind?: unknown };
-                        const kind = raw?.kind;
-                        if (kind !== "register" && kind !== "authenticate") {
-                                return errorResponse("Invalid faceid challenge kind", 400);
-                        }
-                        try {
-                                const result = await faceId.createChallenge(kind, url.hostname, origin);
-                                return json(result, 200);
-                        } catch (error) {
-                                const message = error instanceof Error ? error.message : String(error);
-                                return errorResponse(message, 400);
-                        }
-                }
-
-                if (req.method === "POST" && url.pathname === "/api/faceid/verify") {
-                        const raw = (await requireJsonBody(req)) as { challengeId?: unknown; credential?: unknown };
-                        if (typeof raw?.challengeId !== "string" || raw.challengeId.length === 0) {
-                                return errorResponse("Missing challengeId", 400);
-                        }
-                        try {
-                                const result = await faceId.verify(raw.challengeId, raw.credential);
-                                return json(result, 200);
-                        } catch (error) {
-                                const message = error instanceof Error ? error.message : String(error);
-                                return errorResponse(message, 400);
-                        }
-                }
 
 		if (req.method === "POST" && url.pathname === "/api/sessions") {
 			const raw = (await requireJsonBody(req)) as ApiCreateSessionRequest;
