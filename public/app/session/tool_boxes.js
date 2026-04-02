@@ -35,7 +35,9 @@ export function createToolBoxManager({ msgsEl, scrollToBottom }) {
 			fullText: "",
 		};
 		toolBoxes.set(toolCallId, entry);
-		scrollToBottom();
+		if (msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight <= 80) {
+			scrollToBottom();
+		}
 		return entry;
 	}
 

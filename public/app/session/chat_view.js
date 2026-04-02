@@ -191,6 +191,7 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 			const update = event.assistantMessageEvent;
 			if (!update || typeof update.type !== "string") return;
 
+			const nearBottom = isNearBottom(msgsEl);
 			const block = ensureAssistantBlock();
 			if ((update.type === "thinking_delta" || update.type === "reasoning_delta") && typeof update.delta === "string") {
 				block.rawThinking += update.delta;
@@ -203,7 +204,7 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 			} else {
 				return;
 			}
-			scrollToBottom();
+			if (nearBottom) scrollToBottom();
 			return;
 		}
 
@@ -259,14 +260,14 @@ export function createChatView({ msgsEl, isPhoneLikeFn }) {
 
 		if (event.type === "tool_execution_update") {
 			if (!tools.has(event.toolCallId)) return;
-			const stick = isPhoneLikeFn() && isNearBottom(msgsEl);
+			const stick = isNearBottom(msgsEl);
 			tools.setText(event.toolCallId, event.toolName, toolResultToText(event.partialResult));
 			if (stick) scrollToBottom();
 			return;
 		}
 
 		if (event.type === "tool_execution_end") {
-			const stick = isPhoneLikeFn() && isNearBottom(msgsEl);
+			const stick = isNearBottom(msgsEl);
 			if (!tools.has(event.toolCallId)) {
 				tools.ensure(event.toolCallId, event.toolName, event.isError ? "error" : "success");
 			}

@@ -1,6 +1,5 @@
 import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
-import { installFaceIdGuard } from "./core/faceid.js";
 import { getOrCreateClientId, getToken } from "./core/storage.js";
 import { createSessionController } from "./session/controller.js";
 import { createMenu } from "./ui/menu.js";
@@ -47,8 +46,6 @@ const clientId = getOrCreateClientId();
 const token = getToken();
 const replayName = new URL(window.location.href).searchParams.get("replay")?.trim() || null;
 const api = createApi(token);
-const faceIdGuard = installFaceIdGuard({ api });
-
 let workingIntervalId = null;
 let workingFrame = 0;
 
@@ -326,4 +323,3 @@ if (replayName) {
 	setInterval(() => void sidebarCtrl.refresh(), 5_000);
 }
 
-void faceIdGuard.start();
