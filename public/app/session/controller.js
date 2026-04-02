@@ -18,6 +18,7 @@ export function createSessionController({
 	let role = "viewer";
 	let eventSource = null;
 	let lastCliCommand = null;
+	let cachedCommands = [];
 
 	let pendingPrompt = false;
 
@@ -46,6 +47,19 @@ export function createSessionController({
 		};
 	}
 
+	async function fetchCommands() {
+		if (!activeSessionId) {
+			cachedCommands = [];
+			return;
+		}
+		try {
+			const result = await api.fetchCommands(activeSessionId);
+			cachedCommands = result.commands || [];
+		} catch {
+			cachedCommands = [];
+		}
+	}
+
 	function handleSse(event) {
 		if (!event || typeof event.type !== "string") return;
 
@@ -60,6 +74,7 @@ export function createSessionController({
 			chatView.renderHistory(activeState.messages || []);
 			onStateChange();
 			chatView.scrollToBottom();
+			void fetchCommands();
 			return;
 		}
 
@@ -291,6 +306,7 @@ export function createSessionController({
 		getControllerClientId: () => controllerClientId,
 		getRole: () => role,
 		getPendingPrompt: () => pendingPrompt,
+		getCommands: () => cachedCommands,
 		isController: () => Boolean(activeSessionId && controllerClientId === clientId),
 		appendNotice: chatView.appendNotice,
 		runReplay,

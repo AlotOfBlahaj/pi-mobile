@@ -24,6 +24,35 @@ export interface ApiAddRepoRequest {
 	cwd: string;
 }
 
+// Sidebar combined response
+export interface ApiSidebarResponse {
+	homeDir: string;
+	repos: ApiRepoEntry[];
+	activeSessions: ApiSessionSummary[];
+}
+
+// Repo with activity metadata
+export interface ApiRepoEntry {
+	cwd: string;
+	lastActivity: string | null; // ISO 8601 of most recent session modified time
+}
+
+// File system browsing
+export interface FsEntry {
+	name: string;
+	path: string;        // absolute resolved path
+	isDirectory: boolean;
+}
+export interface FsListResponse {
+	path: string;        // resolved absolute path
+	entries: FsEntry[];  // sorted: directories first, then files, alphabetical
+}
+
+// Remove repo request
+export interface ApiRemoveRepoRequest {
+	cwd: string;
+}
+
 export interface ApiActiveSessionsResponse {
 	sessions: ApiSessionSummary[];
 }
@@ -119,6 +148,16 @@ export interface ApiTakeoverRequest {
 
 export interface ApiReleaseRequest {
 	clientId: string;
+}
+
+export interface ApiCommandInfo {
+	name: string;
+	description?: string;
+	source: "prompt" | "skill";
+}
+
+export interface ApiCommandsResponse {
+	commands: ApiCommandInfo[];
 }
 
 export type SseEvent =

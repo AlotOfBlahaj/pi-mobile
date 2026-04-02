@@ -23,6 +23,22 @@ export function createApi(token) {
 		return body;
 	}
 
-	return { headers, getJson, postJson };
+	async function deleteJson(path, payload) {
+		const res = await fetch(path, {
+			method: "DELETE",
+			headers: headers(),
+			body: payload ? JSON.stringify(payload) : undefined,
+		});
+		if (res.status === 204) return res;
+		const body = await res.json().catch(() => ({}));
+		if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+		return res;
+	}
+
+	async function fetchCommands(sessionId) {
+		return getJson(`/api/sessions/${encodeURIComponent(sessionId)}/commands`);
+	}
+
+	return { headers, getJson, postJson, deleteJson, fetchCommands };
 }
 

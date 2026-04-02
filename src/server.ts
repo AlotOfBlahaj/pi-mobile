@@ -6,6 +6,7 @@ import type {
 	ApiCommandRequest,
 	ApiActiveSessionsResponse,
 	ApiAddRepoRequest,
+	ApiCommandsResponse,
 	ApiCreateSessionRequest,
 	ApiErrorResponse,
 	ApiListModelsResponse,
@@ -13,8 +14,11 @@ import type {
 	ApiListSessionsResponse,
 	ApiOkResponse,
 	ApiReleaseRequest,
+	ApiRemoveRepoRequest,
 	ApiSessionState,
+	ApiSidebarResponse,
 	ApiTakeoverRequest,
+	FsListResponse,
 	SseEvent,
 } from "./types.ts";
 
@@ -308,12 +312,25 @@ Bun.serve({
 			if (filePath) return serveStatic(filePath);
 		}
 
+		if (req.method === "GET" && url.pathname === "/api/sidebar") {
+			try {
+				const data = await runtime.getSidebarData();
+				return json(data, 200);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				return errorResponse(message, 500);
+			}
+		}
+
 		if (req.method === "GET" && url.pathname === "/api/sessions") {
-			const sessions = await runtime.listSessions();
 			const cwdFilter = url.searchParams.get("cwd")?.trim();
-			const filtered =
-				cwdFilter && cwdFilter.length > 0 ? sessions.filter((s) => typeof s.cwd === "string" && s.cwd === cwdFilter) : sessions;
-			const body: ApiListSessionsResponse = { sessions: filtered };
+			let sessions;
+			if (cwdFilter && cwdFilter.length > 0) {
+				sessions = await runtime.listSessionsByCwd(cwdFilter);
+			} else {
+				sessions = await runtime.listSessions();
+			}
+			const body: ApiListSessionsResponse = { sessions };
 			return json(body, 200);
 		}
 
@@ -349,6 +366,38 @@ Bun.serve({
 			}
 		}
 
+		if (req.method === "DELETE" && url.pathname === "/api/repos") {
+			const raw = (await requireJsonBody(req)) as ApiRemoveRepoRequest;
+			if (!raw?.cwd || typeof raw.cwd !== "string" || !raw.cwd.trim()) {
+				return errorResponse("Missing or invalid cwd", 400);
+			}
+			try {
+				await runtime.removeRepo(raw.cwd);
+				return new Response(null, { status: 204 });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message === "repo_not_found") return errorResponse("Repo not found", 404);
+				return errorResponse(message, 400);
+			}
+		}
+
+		if (req.method === "GET" && url.pathname === "/api/fs/ls") {
+			const path = url.searchParams.get("path")?.trim();
+			if (!path) {
+				return errorResponse("Missing path query parameter", 400);
+			}
+			try {
+				const data = await runtime.listFsEntries(path);
+				return json(data, 200);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (message === "path_not_allowed") return errorResponse("Path not allowed", 403);
+				if (message === "ENOENT") return errorResponse("Path not found", 404);
+				if (message === "EACCES") return errorResponse("Permission denied", 403);
+				return errorResponse(message, 500);
+			}
+		}
+
 		if (req.method === "POST" && url.pathname === "/api/sessions") {
 			const raw = (await requireJsonBody(req)) as ApiCreateSessionRequest;
 			try {
@@ -371,6 +420,16 @@ Bun.serve({
 			try {
 				const state: ApiSessionState = runtime.getSessionState(sessionId);
 				return json(state, 200);
+			} catch {
+				return errorResponse("Session not running", 404);
+			}
+		}
+
+		if (req.method === "GET" && action === "commands") {
+			try {
+				const commands = runtime.getCommands(sessionId);
+				const body: ApiCommandsResponse = { commands };
+				return json(body, 200);
 			} catch {
 				return errorResponse("Session not running", 404);
 			}

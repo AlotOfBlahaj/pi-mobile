@@ -9,18 +9,23 @@ import {
 import { existsSync } from "node:fs";
 import { mkdirSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type {
 	ApiCommandRequest,
+	ApiCommandInfo,
 	ApiCreateSessionRequest,
 	ApiModelInfo,
+	ApiRepoEntry,
 	ApiSessionState,
 	ApiSessionSummary,
+	ApiSidebarResponse,
 	ClientRole,
 	ApiSessionPatch,
+	FsEntry,
+	FsListResponse,
 	SseEvent,
 } from "./types.ts";
 
@@ -139,6 +144,23 @@ function normalizeCwd(input: string): string {
 	return resolve(input.trim());
 }
 
+const BLOCKED_PREFIXES = ["/proc", "/sys", "/dev", "/etc"];
+
+export function isPathAllowed(resolvedPath: string, homeDir: string): boolean {
+	const normHome = homeDir.endsWith("/") ? homeDir : homeDir + "/";
+	const normPath = resolvedPath.endsWith("/") ? resolvedPath : resolvedPath + "/";
+
+	// Must be under home directory
+	if (!normPath.startsWith(normHome) && normPath !== homeDir) return false;
+
+	// Block system directories
+	for (const prefix of BLOCKED_PREFIXES) {
+		if (resolvedPath === prefix || resolvedPath.startsWith(prefix + "/")) return false;
+	}
+
+	return true;
+}
+
 function serializeSessionSummary(entry: {
 	id: string;
 	path: string;
@@ -236,6 +258,153 @@ export class PiWebRuntime {
 		return sessions;
 	}
 
+	async getSidebarData(): Promise<ApiSidebarResponse> {
+		const homeDir = homedir();
+		const repoSet = new Set<string>();
+
+		// Repos from repos.json only (NOT listAll)
+		for (const repo of await this.loadReposFromDisk()) {
+			repoSet.add(repo);
+		}
+
+		// Merge running session cwds into repos set
+		for (const runtime of this.runningById.values()) {
+			if (runtime.cwd.trim()) repoSet.add(runtime.cwd.trim());
+		}
+
+		// Build repo entries with lastActivity
+		const repoEntries: ApiRepoEntry[] = [];
+		for (const cwd of repoSet) {
+			let lastActivity: string | null = null;
+
+			// Check running sessions for this cwd
+			for (const runtime of this.runningById.values()) {
+				if (runtime.cwd === cwd) {
+					const iso = toIso(runtime.modifiedAtMs);
+					if (!lastActivity || iso > lastActivity) lastActivity = iso;
+				}
+			}
+
+			// Check saved sessions for this cwd
+			try {
+				const saved = await SessionManager.list(cwd).catch(() => []);
+				for (const entry of saved) {
+					const iso = entry.modified.toISOString();
+					if (!lastActivity || iso > lastActivity) lastActivity = iso;
+				}
+			} catch {
+				// no sessions for this cwd
+			}
+
+			repoEntries.push({ cwd, lastActivity });
+		}
+
+		// Sort: those with lastActivity descending first, then alphabetically for nulls
+		repoEntries.sort((a, b) => {
+			if (a.lastActivity && b.lastActivity) return b.lastActivity.localeCompare(a.lastActivity);
+			if (a.lastActivity) return -1;
+			if (b.lastActivity) return 1;
+			return a.cwd.localeCompare(b.cwd);
+		});
+
+		// Active sessions from runningById (same as listActiveSessions)
+		const activeSessions = this.listActiveSessions();
+
+		return { homeDir, repos: repoEntries, activeSessions };
+	}
+
+	async listSessionsByCwd(cwd: string): Promise<ApiSessionSummary[]> {
+		const normalized = normalizeCwd(cwd);
+		const saved = await SessionManager.list(normalized).catch(() => []);
+		const byId = new Map<string, ApiSessionSummary>();
+
+		for (const entry of saved) {
+			const summary = serializeSessionSummary(entry);
+			summary.isRunning = this.runningByPath.has(entry.path);
+			byId.set(summary.id, summary);
+		}
+
+		// Merge running sessions for this cwd
+		for (const [sessionId, runtime] of this.runningById.entries()) {
+			if (runtime.cwd !== normalized) continue;
+			const existing = byId.get(sessionId);
+			if (existing) {
+				existing.isRunning = true;
+				existing.modified = toIso(runtime.modifiedAtMs);
+				existing.messageCount = runtime.session.messages.length;
+				continue;
+			}
+
+			byId.set(sessionId, {
+				id: sessionId,
+				path: runtime.sessionFile && existsSync(runtime.sessionFile) ? runtime.sessionFile : null,
+				cwd: runtime.cwd,
+				name: runtime.session.sessionName,
+				firstMessage: computeFirstMessage(runtime.session.messages),
+				created: toIso(runtime.createdAtMs),
+				modified: toIso(runtime.modifiedAtMs),
+				messageCount: runtime.session.messages.length,
+				isRunning: true,
+			});
+		}
+
+		const sessions = [...byId.values()];
+		sessions.sort((a, b) => b.modified.localeCompare(a.modified));
+		return sessions;
+	}
+
+	async removeRepo(rawCwd: string): Promise<void> {
+		const cwd = normalizeCwd(rawCwd);
+		const repos = await this.loadReposFromDisk();
+		const idx = repos.findIndex((r) => r === cwd);
+		if (idx === -1) throw new Error("repo_not_found");
+		repos.splice(idx, 1);
+		await this.saveReposToDisk(repos);
+		// No file deletion — session files and disk contents untouched
+	}
+
+	async listFsEntries(requestedPath: string): Promise<FsListResponse> {
+		const resolved = resolve(requestedPath);
+		let real: string;
+		try {
+			real = await realpath(resolved);
+		} catch {
+			real = resolved;
+		}
+		const homeDir = homedir();
+		if (!isPathAllowed(real, homeDir)) {
+			throw new Error("path_not_allowed");
+		}
+
+		let entries: FsEntry[];
+		try {
+			const dirents = await readdir(real, { withFileTypes: true });
+			entries = [];
+			for (const d of dirents) {
+				if (d.name.startsWith(".")) continue; // skip hidden
+				const entryPath = join(real, d.name);
+				entries.push({
+					name: d.name,
+					path: entryPath,
+					isDirectory: d.isDirectory(),
+				});
+			}
+		} catch (err: unknown) {
+			const code = (err as { code?: string }).code;
+			if (code === "ENOENT") throw new Error("ENOENT");
+			if (code === "EACCES") throw new Error("EACCES");
+			throw err;
+		}
+
+		// Sort: directories first, then files, alphabetical within each group
+		entries.sort((a, b) => {
+			if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+			return a.name.localeCompare(b.name);
+		});
+
+		return { path: real, entries };
+	}
+
 	async listSessions(): Promise<ApiSessionSummary[]> {
 		const saved = await SessionManager.listAll().catch(() => []);
 		const byId = new Map<string, ApiSessionSummary>();
@@ -319,6 +488,33 @@ export class PiWebRuntime {
 		const controllerClientId = runtime.controllerClientId;
 		const role: ClientRole = controllerClientId === clientId ? "controller" : "viewer";
 		return { role, controllerClientId };
+	}
+
+	getCommands(sessionId: string): ApiCommandInfo[] {
+		const runtime = this.runningById.get(sessionId);
+		if (!runtime) {
+			throw new Error("session_not_running");
+		}
+		const commands: ApiCommandInfo[] = [];
+
+		for (const template of runtime.session.promptTemplates) {
+			commands.push({
+				name: template.name,
+				description: template.description || undefined,
+				source: "prompt",
+			});
+		}
+
+		const { skills } = runtime.session.resourceLoader.getSkills();
+		for (const skill of skills) {
+			commands.push({
+				name: skill.name,
+				description: skill.description || undefined,
+				source: "skill",
+			});
+		}
+
+		return commands;
 	}
 
 	addClient(sessionId: string, client: SessionClient): { role: ClientRole; controllerClientId: string | null } {

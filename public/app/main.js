@@ -2,8 +2,9 @@ import { createApi } from "./core/api.js";
 import { isPhoneLike } from "./core/device.js";
 import { getOrCreateClientId, getToken } from "./core/storage.js";
 import { createSessionController } from "./session/controller.js";
+import { createAutocomplete } from "./ui/autocomplete.js";
 import { createMenu } from "./ui/menu.js";
-import { createSidebar } from "./ui/sidebar.js";
+import { createSidebar } from "./ui/sidebar/index.js";
 
 const sessionsList = document.getElementById("sessions-list");
 const msgs = document.getElementById("msgs");
@@ -21,9 +22,9 @@ const btnThinking = document.getElementById("btn-thinking");
 const lblModel = document.getElementById("lbl-model");
 const lblThinking = document.getElementById("lbl-thinking");
 
-const sidebarLabel = document.getElementById("sidebar-label");
-const btnSidebarLeft = document.getElementById("btn-sidebar-left");
-const btnSidebarRight = document.getElementById("btn-sidebar-right");
+const btnNew = document.getElementById("btn-new");
+const btnAddRepo = document.getElementById("btn-add-repo");
+const btnRefresh = document.getElementById("btn-refresh");
 
 const btnTakeover = document.getElementById("btn-takeover");
 const btnAbort = document.getElementById("btn-abort");
@@ -51,6 +52,7 @@ let workingFrame = 0;
 
 let sidebarCtrl = null;
 let menuCtrl = null;
+let autocompleteCtrl = null;
 
 function formatTokens(n) {
 	const num = Number(n || 0);
@@ -248,9 +250,9 @@ sidebarCtrl = createSidebar({
 	sessionsList,
 	sidebar,
 	sidebarOverlay,
-	sidebarLabel,
-	btnSidebarLeft,
-	btnSidebarRight,
+	btnNew,
+	btnAddRepo,
+	btnRefresh,
 	api,
 	clientId,
 	onNotice: sessionCtrl.appendNotice,
@@ -275,6 +277,16 @@ menuCtrl = createMenu({
 	getActiveState: () => sessionCtrl.getActiveState(),
 });
 
+autocompleteCtrl = createAutocomplete({
+	inputEl: input,
+	getCommands: () => sessionCtrl.getCommands(),
+	onSelect: (text) => {
+		input.value = text;
+		autoResize(input);
+		input.focus();
+	},
+});
+
 btnAbort.addEventListener("click", () => void sessionCtrl.abortRun());
 btnTakeover.addEventListener("click", () => void sessionCtrl.takeOver());
 btnRelease.addEventListener("click", () => void sessionCtrl.release());
@@ -289,9 +301,47 @@ if (kbEnter) kbEnter.addEventListener("click", () => sendPromptFromInput());
 
 if (sidebarOverlay) sidebarOverlay.addEventListener("click", () => sidebarCtrl.setOpen(false));
 
-input.addEventListener("input", () => autoResize(input));
+input.addEventListener("input", () => {
+	autoResize(input);
+	autocompleteCtrl.update(input.value);
+});
+input.addEventListener("blur", () => {
+	// Small delay to allow click on autocomplete item
+	setTimeout(() => autocompleteCtrl.hide(), 150);
+});
 input.addEventListener("keydown", (e) => {
 	if (isPhoneLike()) return;
+
+	// Autocomplete navigation
+	if (autocompleteCtrl.isOpen()) {
+		if (e.key === "ArrowDown") {
+			e.preventDefault();
+			autocompleteCtrl.navigate("down");
+			return;
+		}
+		if (e.key === "ArrowUp") {
+			e.preventDefault();
+			autocompleteCtrl.navigate("up");
+			return;
+		}
+		if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+			e.preventDefault();
+			if (autocompleteCtrl.confirm()) return;
+			// If confirm didn't select anything, fall through for Enter to send
+			if (e.key === "Enter") {
+				// Close autocomplete but don't send - user might want to type more
+				autocompleteCtrl.hide();
+				return;
+			}
+			return;
+		}
+		if (e.key === "Escape") {
+			e.preventDefault();
+			autocompleteCtrl.hide();
+			return;
+		}
+	}
+
 	if (e.key === "Enter" && !e.shiftKey) {
 		e.preventDefault();
 		sendPromptFromInput();
@@ -300,6 +350,11 @@ input.addEventListener("keydown", (e) => {
 
 window.addEventListener("keydown", (e) => {
 	if (e.key === "Escape") {
+		if (autocompleteCtrl.isOpen()) {
+			e.preventDefault();
+			autocompleteCtrl.hide();
+			return;
+		}
 		if (menuCtrl.isOpen()) {
 			e.preventDefault();
 			menuCtrl.close();
@@ -320,6 +375,10 @@ if (replayName) {
 	void sessionCtrl.runReplay(replayName);
 } else {
 	void sidebarCtrl.refresh();
-	setInterval(() => void sidebarCtrl.refresh(), 5_000);
 }
+
+// Visibility-based refresh instead of polling
+document.addEventListener("visibilitychange", () => {
+	if (!document.hidden) void sidebarCtrl.refresh();
+});
 

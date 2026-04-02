@@ -12,6 +12,7 @@
 		"@mariozechner/pi-coding-agent": "~0.53.0"
 	},
 	"devDependencies": {
-		"@playwright/test": "^1.51.0"
+		"@playwright/test": "^1.51.0",
+		"happy-dom": "^20.8.9"
 	}
 }
